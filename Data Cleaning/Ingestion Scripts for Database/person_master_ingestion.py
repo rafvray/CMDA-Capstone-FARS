@@ -24,7 +24,7 @@ inspector = inspect(engine)
 tables = inspector.get_table_names()
 print("Tables in database:", tables)
 
-person_master = pd.read_csv("/Users/rafaelviray/Downloads/person_master.csv") # change to your path
+person_master = pd.read_csv("/Users/rafaelviray/Downloads/master_person.csv") # change to your path
 
 
 person_master.head(0).to_sql(

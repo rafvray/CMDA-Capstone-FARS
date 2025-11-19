@@ -16,7 +16,7 @@ def main():
     # Load raw docs from CSV
     documents = load_dataset_as_documents(
         csv_path=CSV_PATH,
-        text_cols=None,  # or specify e.g. ["ST_CASE", "STATE", "FATALS", "WEATHER"]
+        text_cols=None, 
         id_col=None,
     )
 

@@ -10,7 +10,7 @@ db = SQLDatabase.from_databricks(
     api_token=os.getenv("DATABRICKS_TOKEN"),
     host=os.getenv("DATABRICKS_HOST"),
     warehouse_id=os.getenv("DATABRICKS_WAREHOUSE_ID"),
-    include_tables=["accident_master"]
+    include_tables=["accident_master", "person_master", "vehicle_master"]
 )
 
 print(db.table_info)

@@ -1,13 +1,12 @@
 # Namrata
-
 """
 orchestration_prompt_engineering.py
 
 Unified SQL + RAG Assistant using:
-- Ollama for SQL generation
+- Your custom SQL generator (ask_fars_database)
 - FAISS + Ollama for RAG retrieval
 - Router LLM to pick SQL, RAG, or BOTH
-- Databricks to run SQL queries
+- Databricks for SQL execution
 """
 
 import os
@@ -17,62 +16,17 @@ from dotenv import load_dotenv
 load_dotenv("../config/.env")
 
 # ----------------------------------------------
-# 1) IMPORT SQL MODULE
+# 1) IMPORT YOUR SQL MODULE
 # ----------------------------------------------
-from langchain_community.utilities import SQLDatabase
-from langchain_community.agent_toolkits.sql.base import create_sql_agent
-from langchain_ollama import ChatOllama
+from sql_query_chain import ask_fars_database
 
-# ---------------- Databricks Connection ----------------
-db = SQLDatabase.from_databricks(
-    catalog="workspace",
-    schema="fars_database",
-    api_token=os.getenv("DATABRICKS_TOKEN"),
-    host=os.getenv("DATABRICKS_HOST"),
-    warehouse_id=os.getenv("DATABRICKS_WAREHOUSE_ID"),
-    include_tables=["accident_master", "person_master", "vehicle_master"]
-)
-
-# ---- Ollama LLM for generating SQL ----
-sql_llm = ChatOllama(model="llama3", temperature=0)
-
-# ---- SQL Agent: generates SQL string only ----
-sql_agent = create_sql_agent(
-    llm=sql_llm,
-    db=db,
-    agent_type="openai-tools",  # works for generating SQL
-    verbose=False
-)
-
-def run_sql_query(question: str, execute: bool = True) -> str:
-    """
-    Generate SQL from a natural language question.
-    If execute=True, runs it on Databricks and returns results.
-    Otherwise, returns the SQL string only.
-    """
-    try:
-        # Get the SQL string from Ollama agent
-        result = sql_agent.invoke({"input": question})
-        sql_string = result["output"]
-
-        # Optional: remove ``` backticks if present
-        sql_string = sql_string.replace("```", "").strip()
-
-        if not execute:
-            return sql_string
-
-        # Execute the SQL on Databricks
-        with db.engine.connect() as conn:
-            query_result = conn.execute(sql_string)
-            rows = query_result.fetchall()
-            return rows if rows else "No results"
-
-    except Exception as e:
-        return f"SQL error: {str(e)}"
+# ask_fars_database(question: str)
+# → returns SQL result directly from Databricks
+# → uses schema prompts + ST_CASE rules
 
 
 # ----------------------------------------------
-# 2) IMPORT RAG MODULE
+# 2) IMPORT RAG MODULE (Supports All Tables)
 # ----------------------------------------------
 from faiss_rag_retriever import (
     load_table_as_documents,
@@ -80,10 +34,28 @@ from faiss_rag_retriever import (
     build_simple_rag_qa,
 )
 
-TABLE_NAME = "workspace.fars_database.accident_master"
-docs = load_table_as_documents(TABLE_NAME)
-vectorstore = build_faiss_vectorstore(docs)
+RAG_TABLES = [
+    "accident_master",
+    "person_master",
+    "vehicle_master"
+]
+
+print("Loading documents from ALL FARS tables for RAG...")
+
+all_docs = []
+for table in RAG_TABLES:
+    print(f"Loading {table}...")
+    table_docs = load_table_as_documents(table)
+    all_docs.extend(table_docs)
+
+print(f"Total documents loaded: {len(all_docs)}")
+
+print("Building unified FAISS vectorstore across all tables...")
+vectorstore = build_faiss_vectorstore(all_docs)
+
+print("Building Simple RAG QA system...")
 rag_qa = build_simple_rag_qa(vectorstore)
+
 
 def run_rag(question: str) -> str:
     answer, _ = rag_qa.answer(question)
@@ -93,24 +65,26 @@ def run_rag(question: str) -> str:
 # ----------------------------------------------
 # 3) ROUTER LLM
 # ----------------------------------------------
+from langchain_ollama import ChatOllama
+
 router_llm = ChatOllama(model="llama3", temperature=0)
 
 ROUTER_PROMPT = """
 You are a routing classifier.
+Choose which system should answer the user's question.
 
-Your job is to decide which module should answer a user question:
+Return ONLY one of these EXACT labels:
 
-Return ONLY one of these labels:
-
-- "sql" → structured queries, counts, joins
-- "rag" → descriptive, explanatory questions
-- "both" → combination
+- "sql"  → numeric summaries, aggregates, counts, filtering, joins
+- "rag"  → descriptive/explanatory questions, narrative information
+- "both" → requires both a SQL numeric result + a written explanation
 
 QUESTION:
 {question}
 
 LABEL ONLY:
 """
+
 
 def route(question: str) -> Literal["sql", "rag", "both"]:
     resp = router_llm.invoke(ROUTER_PROMPT.format(question=question))
@@ -128,38 +102,49 @@ def route(question: str) -> Literal["sql", "rag", "both"]:
 # ----------------------------------------------
 # 4) MAIN ORCHESTRATION LOGIC
 # ----------------------------------------------
-def answer_question(question: str, execute_sql: bool = True) -> str:
+def answer_question(question: str) -> str:
+    """
+    Route question → SQL, RAG, or both.
+    SQL is executed using your ask_fars_database() helper.
+    """
     choice = route(question)
 
+    # --- SQL only ---
     if choice == "sql":
-        return run_sql_query(question, execute=execute_sql)
+        return ask_fars_database(question)
 
+    # --- RAG only ---
     if choice == "rag":
         return run_rag(question)
 
+    # --- Both ---
     if choice == "both":
-        sql_answer = run_sql_query(question, execute=execute_sql)
-        rag_answer = run_rag(question)
+        sql_result = ask_fars_database(question)
+        
+        # New step: Ask the RAG system to interpret the SQL result
+        interpretation_question = f"The following SQL query for the question '{question}' returned this result: {sql_result}. Provide an explanation or context for this finding."
+        rag_text = run_rag(interpretation_question)
+
         return f"""
-Combined Answer:
+    Combined Answer:
 
-🔢 **Data Result (SQL)**  
-{sql_answer}
+    🔢 **SQL Data**
+    The precise numeric result is: {sql_result}
 
-📖 **Explanation (RAG)**  
-{rag_answer}
-"""
-
+    📖 **Explanation (RAG)**
+    {rag_text}
+    """
 
 # ----------------------------------------------
 # 5) CLI Interface
 # ----------------------------------------------
 if __name__ == "__main__":
-    print("Unified SQL + RAG Assistant (Ollama + FAISS + Databricks)")
+    print("Unified SQL + RAG Assistant Ready (Ollama + FAISS + Databricks)")
     print("Type 'quit' to exit.\n")
 
     while True:
         q = input("You: ").strip()
         if q.lower() in ("quit", "exit"):
             break
+
         print("\nAssistant:", answer_question(q), "\n")

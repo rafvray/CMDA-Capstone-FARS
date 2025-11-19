@@ -1,0 +1,4 @@
+langchain-community
+databricks-sql-connector
+databricks-sqlalchemy
+langchain-ollama

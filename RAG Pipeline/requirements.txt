@@ -1,0 +1,7 @@
+langchain-core
+langchain-community
+langchain
+langchain-ollama
+langchain-text-splitters
+databricks-sql-connector
+databricks-sqlalchemy

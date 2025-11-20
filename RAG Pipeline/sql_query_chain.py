@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import os
 import ast
 import re 
+import decimal
+import pprint
 load_dotenv("../config/.env")
 
 # ---------------- Databricks Connection ----------------
@@ -85,6 +87,8 @@ def build_schema_prompt(tables):
         "9. IMPERATIVE GROUP BY: Use GROUP BY for ANY column in the SELECT clause that is NOT aggregated (SUM, COUNT, etc.).\n"
         "10. IMPERATIVE JOIN: If columns from different tables are needed, join using `ON t1.ST_CASE = t2.ST_CASE`.\n"
         "11. Output ONLY the SQL query. No comments. No markdown.\n\n"
+        "12. NEVER reference tables that are not listed (e.g., accident_data is invalid).\n"
+        "13. **NEVER use string literals like 'DRIVER' or 'RAIN' in WHERE clauses for these columns.** Use only numeric codes (e.g., `PER_TYP = 1`).\n"
         "Available Tables and Columns:\n"
     )
     
@@ -104,82 +108,124 @@ def build_schema_prompt(tables):
     
     return prompt
 
+# ---------------- Load metadata SQL file and append to prompt ----------------
+METADATA_SQL_PATH = "../metadata.sql"  # change if needed
+
+def load_metadata_sql(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return None
+
+METADATA_SQL_TEXT = load_metadata_sql(METADATA_SQL_PATH)
+if METADATA_SQL_TEXT:
+    # MAKE IT SMALL — we will append a brief excerpt to the prompt (not massive files)
+    METADATA_SQL_TEXT = METADATA_SQL_TEXT.strip()
+    if len(METADATA_SQL_TEXT) > 4000:
+        METADATA_SQL_TEXT = METADATA_SQL_TEXT[:4000] + "\n-- (truncated) --"
+
+
 # ---------------- Result Parsers ----------------
 def clean_sql_output(sql_text):
-    sql_text = sql_text.strip()
-    sql_text = re.sub(r"^\s*```[a-zA-Z]*\n?|\n?```\s*$", "", sql_text, flags=re.MULTILINE).strip()
-    start_keywords = ["SELECT", "WITH"]
-    start_idx = -1
-    for kw in start_keywords:
-        idx = sql_text.upper().find(kw)
-        if idx != -1:
-            start_idx = idx
-            break
-    if start_idx != -1:
-        sql_text = sql_text[start_idx:]
-    final_semicolon_idx = sql_text.rfind(";")
-    if final_semicolon_idx != -1:
-        sql_text = sql_text[:final_semicolon_idx + 1]
-    return sql_text.strip()
+    if sql_text is None:
+        return ""
 
+    # remove markdown fences
+    sql_text = re.sub(r"```(?:sql)?\n?", "", sql_text, flags=re.IGNORECASE)
+    sql_text = re.sub(r"\n?```$", "", sql_text, flags=re.IGNORECASE).strip()
+
+    # try to find SELECT or WITH to the first semicolon
+    match = re.search(r"((SELECT|WITH)[\s\S]*?;)", sql_text, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # fallback: ensure trailing semicolon
+    sql = sql_text.strip()
+    if not sql.endswith(";"):
+        sql += ";"
+    return sql
+
+# In sql_query_chain.py, replace the existing safe_fetch_single_value with this:
 def safe_fetch_single_value(result):
-    if result is None or result in ('[]', '[()]'):
+    """Safely extract a single value (e.g., count or sum) from query result."""
+    
+    # 1. Handle direct None or empty string result
+    if result is None or (isinstance(result, str) and not result.strip()):
         return 0
+    
+    # 2. Attempt to evaluate string results (common LangChain behavior)
     if isinstance(result, str):
-        try:
-            result = ast.literal_eval(result)
-        except:
+        result = result.strip()
+        # Handle string representations of empty results
+        if result in ('[]', '[()]', 'None'):
             return 0
+        try:
+            # Use ast.literal_eval to convert string representation of list/tuple/int/float
+            result = ast.literal_eval(result)
+        except Exception:
+            # If literal_eval fails, it might be a raw numeric string.
+            try:
+                return int(float(result)) # Attempt to cast to number
+            except:
+                return 0 # Fallback for unparseable raw string
+
+    # 3. Process list/tuple results (which should contain the final value)
     if isinstance(result, (list, tuple)) and len(result) > 0:
         first_row = result[0]
+        
+        # If the result is a list of rows (e.g., [(100,)]), extract the first value
         if isinstance(first_row, (list, tuple)) and len(first_row) > 0:
             val = first_row[0]
             return val if val is not None else 0
-        return result[0] if result[0] is not None else 0
+        
+        # If the result is a flat list/tuple (e.g., [100]), return the first element.
+        return first_row if first_row is not None else 0
+    
+    # 4. Handle direct numeric result
     return result if result is not None else 0
 
 # ---------------- Main Query Function ----------------
-def ask_fars_database(question: str, max_retries: int = 2):
+# removed error feedback logic - implement back if needed.
+def ask_fars_database(question: str, max_retries: int = 0):
     tables = ["accident_master", "person_master", "vehicle_master"]
     schema_prompt = build_schema_prompt(tables)
 
-    def generate_sql(question, error_msg=None):
-        feedback = ""
-        if error_msg:
-            if "PARSE_SYNTAX_ERROR" in error_msg:
-                feedback = "\nPrevious SQL error: PARSE_SYNTAX_ERROR. Double-check syntax.\n"
-            elif "MISSING_GROUP_BY" in error_msg:
-                feedback = "\nPrevious SQL error: Missing GROUP BY.\n"
-            elif "CAST_INVALID_INPUT" in error_msg:
-                feedback = "\nPrevious SQL error: Tried to compare numeric column with string.\n"
-            else:
-                feedback = f"\nPrevious SQL error: {error_msg}\nFix SQL accordingly.\n"
+    if METADATA_SQL_TEXT:
+        schema_prompt = schema_prompt + "\n\n-- METADATA SQL (reference):\n" + METADATA_SQL_TEXT + "\n\n"
 
+    # ------------------------
+    # SQL GENERATION (simple)
+    # ------------------------
+    def generate_sql(question):
         prompt = (
             f"{schema_prompt}"
-            f"{feedback}"
             f"Question: {question}\n"
-            "Write ONLY the valid SQL query."
+            "Write ONLY the valid Databricks SQL query, starting with SELECT or WITH and ending with a semicolon."
         )
+        response = llm.invoke(prompt)
+        sql_text = clean_sql_output(response.content.strip())
+        return sql_text
 
-        sql_text = llm.invoke(prompt).content
-        return clean_sql_output(sql_text)
-
+    # --- Generate SQL (no feedback loops)
     sql_query = generate_sql(question)
     print("Generated SQL:", sql_query)
 
-    attempts = 0
-    while attempts <= max_retries:
-        try:
-            result = db.run(sql_query)
-            if question.lower().startswith("show me"):
-                return result
-            return safe_fetch_single_value(result)
-        except Exception as e:
-            print(f"\nSQL execution error: {e}")
-            attempts += 1
-            if attempts > max_retries:
-                return f"Failed after {max_retries} retries: {e}"
-            print("\nRegenerating SQL using error feedback...")
-            sql_query = generate_sql(question, str(e))
-            print("Corrected SQL:", sql_query)
+    # ------------------------
+    # EXECUTE ONCE — NO RETRIES
+    # ------------------------
+    try:
+        result = db.run(sql_query)
+
+        print("RAW DB RESULT:", result)
+        print("RAW TYPE:", type(result))
+
+        # If "show me ..." return table
+        if question.lower().startswith("show me"):
+            return result
+
+        return safe_fetch_single_value(result)
+
+    except Exception as e:
+        # Just return the error, no regeneration
+        return f"SQL execution error: {str(e)}"

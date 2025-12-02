@@ -1,4 +1,3 @@
-// src/components/FARSChatbot.jsx
 import React, { useState, useEffect, useRef } from "react"
 
 export default function FARSChatbot() {
@@ -33,16 +32,16 @@ export default function FARSChatbot() {
       text: inputValue.trim()
     }
 
-    // append instead of overwrite
+    // ✅ append to existing history
     setMessages(prev => [...prev, userMessage])
     setInputValue("")
     setIsDisabled(true)
     setIsThinking(true)
 
-    // TODO: replace this timeout with a real call to your RAG backend
+    // 🔧 TODO: replace this timeout with real backend call
     setTimeout(() => {
       setIsThinking(false)
-      setIsDisabled(false)
+      setIsDisabled(false) // ✅ re-enable input
 
       const botMessage = {
         id: Date.now() + 1,
@@ -52,12 +51,11 @@ export default function FARSChatbot() {
           "This was a fatal accident in the rain involving a 17-year-old driver in a 2018 Honda Civic. " +
           "The report indicates the injury severity for the driver was fatal."
       }
-
       setMessages(prev => [...prev, botMessage])
-    }, 1500)
+    }, 3000)
   }
 
-  const handleKeyDown = e => {
+  const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey && !isDisabled) {
       e.preventDefault()
       handleSend()
@@ -87,14 +85,16 @@ export default function FARSChatbot() {
       </style>
 
       <div className="w-full max-w-2xl bg-[#ffffff] rounded-2xl shadow-lg overflow-hidden">
+        {/* Header – same as your first screenshot */}
         <div className="bg-[#630031] px-6 py-4">
           <h1 className="text-[#ffffff] text-xl font-semibold">
             FARS Conversational Query
           </h1>
         </div>
 
+        {/* Messages area */}
         <div className="h-96 overflow-y-auto p-6 space-y-4">
-          {messages.map(message => (
+          {messages.map((message) => (
             <div
               key={message.id}
               className={`flex ${
@@ -124,15 +124,16 @@ export default function FARSChatbot() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Input area – pill + orange button like screenshot 1 */}
         <div className="border-t border-[#f4f4f4] p-4">
           <div className="flex gap-3">
-            <input
-              type="text"
+            <textarea
               value={inputValue}
-              onChange={e => setInputValue(e.target.value)}
+              onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isDisabled}
-              className="flex-1 px-4 py-3 border-2 border-[#630031] rounded-full text-[#333333] focus:outline-none focus:border-[#CF5A00] disabled:bg-[#f4f4f4] disabled:cursor-not-allowed text-sm"
+              rows={1}
+              className="flex-1 resize-none px-4 py-3 border-2 border-[#630031] rounded-full text-[#333333] focus:outline-none focus:border-[#CF5A00] disabled:bg-[#f4f4f4] disabled:cursor-not-allowed text-sm"
               placeholder="Type your query..."
             />
             <button
@@ -140,7 +141,7 @@ export default function FARSChatbot() {
               disabled={isDisabled}
               className="px-6 py-3 bg-[#CF5A00] text-[#ffffff] rounded-full font-semibold hover:bg-[#b34f00] disabled:bg-[#cccccc] disabled:cursor-not-allowed transition-colors text-sm"
             >
-              Send
+              {isDisabled ? "Sending..." : "Send"}
             </button>
           </div>
           <p className="text-center text-xs text-[#999999] mt-3">

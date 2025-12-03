@@ -32,16 +32,14 @@ export default function FARSChatbot() {
       text: inputValue.trim()
     }
 
-    // ✅ append to existing history
     setMessages(prev => [...prev, userMessage])
     setInputValue("")
     setIsDisabled(true)
     setIsThinking(true)
 
-    // 🔧 TODO: replace this timeout with real backend call
     setTimeout(() => {
       setIsThinking(false)
-      setIsDisabled(false) // ✅ re-enable input
+      setIsDisabled(false)
 
       const botMessage = {
         id: Date.now() + 1,
@@ -63,14 +61,9 @@ export default function FARSChatbot() {
   }
 
   return (
-    <div
-      className="min-h-screen flex items-center justify-center bg-[#f4f4f4] p-4"
-      style={{ fontFamily: "'Montserrat', sans-serif" }}
-    >
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-4">
       <style>
         {`
-          @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
-          
           @keyframes dots {
             0%, 20% { content: '.'; }
             40% { content: '..'; }
@@ -84,16 +77,16 @@ export default function FARSChatbot() {
         `}
       </style>
 
-      <div className="w-full max-w-2xl bg-[#ffffff] rounded-2xl shadow-lg overflow-hidden">
-        {/* Header – same as your first screenshot */}
-        <div className="bg-[#630031] px-6 py-4">
-          <h1 className="text-[#ffffff] text-xl font-semibold">
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl overflow-hidden">
+        {/* Header */}
+        <div className="bg-maroon px-6 py-5" style={{ backgroundColor: '#630031' }}>
+          <h1 className="text-white text-2xl font-bold">
             FARS Conversational Query
           </h1>
         </div>
 
         {/* Messages area */}
-        <div className="h-96 overflow-y-auto p-6 space-y-4">
+        <div className="h-96 overflow-y-auto p-6 space-y-4 bg-gray-50">
           {messages.map((message) => (
             <div
               key={message.id}
@@ -102,11 +95,12 @@ export default function FARSChatbot() {
               }`}
             >
               <div
-                className={`max-w-[80%] px-4 py-3 rounded-2xl ${
+                className={`max-w-xs md:max-w-md px-5 py-3 rounded-2xl shadow-sm ${
                   message.type === "user"
-                    ? "bg-[#CF5A00] text-[#ffffff]"
-                    : "bg-[#630031] text-[#ffffff]"
+                    ? "bg-orange-600 text-white"
+                    : "text-white"
                 }`}
+                style={message.type === "bot" ? { backgroundColor: '#630031' } : { backgroundColor: '#CF5A00' }}
               >
                 <p className="text-sm leading-relaxed">{message.text}</p>
               </div>
@@ -115,7 +109,7 @@ export default function FARSChatbot() {
 
           {isThinking && (
             <div className="flex justify-start">
-              <div className="max-w-[80%] px-4 py-3 rounded-2xl bg-[#630031] text-[#ffffff]">
+              <div className="max-w-xs md:max-w-md px-5 py-3 rounded-2xl shadow-sm text-white" style={{ backgroundColor: '#630031' }}>
                 <p className="text-sm thinking-dots">Analyzing data</p>
               </div>
             </div>
@@ -124,27 +118,29 @@ export default function FARSChatbot() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area – pill + orange button like screenshot 1 */}
-        <div className="border-t border-[#f4f4f4] p-4">
-          <div className="flex gap-3">
-            <textarea
+        {/* Input area */}
+        <div className="border-t border-gray-200 p-4 bg-white">
+          <div className="flex gap-3 items-end">
+            <input
+              type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isDisabled}
-              rows={1}
-              className="flex-1 resize-none px-4 py-3 border-2 border-[#630031] rounded-full text-[#333333] focus:outline-none focus:border-[#CF5A00] disabled:bg-[#f4f4f4] disabled:cursor-not-allowed text-sm"
+              className="flex-1 px-5 py-3 border-2 rounded-full text-gray-800 focus:outline-none focus:ring-2 disabled:bg-gray-100 disabled:cursor-not-allowed text-sm"
+              style={{ borderColor: '#630031', focusRingColor: '#CF5A00' }}
               placeholder="Type your query..."
             />
             <button
               onClick={handleSend}
               disabled={isDisabled}
-              className="px-6 py-3 bg-[#CF5A00] text-[#ffffff] rounded-full font-semibold hover:bg-[#b34f00] disabled:bg-[#cccccc] disabled:cursor-not-allowed transition-colors text-sm"
+              className="px-8 py-3 text-white rounded-full font-semibold hover:opacity-90 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all text-sm whitespace-nowrap"
+              style={{ backgroundColor: isDisabled ? '#cccccc' : '#CF5A00' }}
             >
               {isDisabled ? "Sending..." : "Send"}
             </button>
           </div>
-          <p className="text-center text-xs text-[#999999] mt-3">
+          <p className="text-center text-xs text-gray-500 mt-3">
             Supported by the Fatality Analysis Reporting System (FARS)
           </p>
         </div>

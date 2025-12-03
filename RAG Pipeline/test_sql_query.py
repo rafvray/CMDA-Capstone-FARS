@@ -8,7 +8,7 @@ import pandas as pd
 questions = [
     "How many total fatalities were there in 2023?",
     "Show me the weather (WEATHER) and number of fatalities (FATALS) for accidents in Virginia (STATE=51) in 2022",
-    "How many accidents involved a 17-year-old driver (PER_TYP = 1)?"
+    "How many accidents involved a 17-year-old (AGE) driver (PER_TYP=1)?"
 ]
 
 for i, q in enumerate(questions, start=1):

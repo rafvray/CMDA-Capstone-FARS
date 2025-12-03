@@ -6,7 +6,7 @@ RAG pipeline using:
 - Ollama (local, free) as the LLM
 - A simple custom Retrieval-QA function
 
-Now supports loading data directly via a Databricks SQL connection.
+Now supports loading data directly via a Databricks SQL connection using databricks-sql-connector.
 """
 
 import os
@@ -51,17 +51,14 @@ def load_dataset_as_documents(
 
 
 # ----------------- Databricks SQL connection -----------------
-from langchain_community.utilities import SQLDatabase
+from databricks import sql
 
 def get_databricks_connection():
-    db = SQLDatabase.from_databricks(
-    catalog="workspace",
-    schema="fars_database",
-    api_token=os.getenv("DATABRICKS_TOKEN"),
-    host=os.getenv("DATABRICKS_HOST"),
-    warehouse_id=os.getenv("DATABRICKS_WAREHOUSE_ID"),
-    include_tables=["accident_master", "person_master", "vehicle_master"]
-)
+    return sql.connect(
+        server_hostname=os.getenv("DATABRICKS_HOST"),
+        http_path=os.getenv("DATABRICKS_HTTP_PATH"),
+        access_token=os.getenv("DATABRICKS_TOKEN")
+    )
 
 # ------------------------------------------------------------------------
 # Load table via Databricks SQL and convert to Documents
@@ -74,8 +71,11 @@ def load_table_as_documents(
     """
     Load a Databricks table using SQL and convert rows to LangChain Documents.
     """
-    db = get_databricks_connection()
-    df = db.run(f"SELECT * FROM {table_name}")
+    with get_databricks_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT * FROM {table_name}")
+            arrow_table = cursor.fetchall_arrow()
+            df = arrow_table.to_pandas()
 
     if text_cols is None:
         text_cols = list(df.columns)
@@ -127,19 +127,19 @@ class SimpleRAGQA:
         context = "\n\n".join(doc.page_content for doc in source_docs)
 
         prompt = f"""
-You are a helpful assistant answering questions based on the provided context.
+        You are a helpful assistant answering questions based on the provided context.
 
-Use ONLY the information in the context to answer the question. If the answer
-is not in the context, say you don't know.
+        Use ONLY the information in the context to answer the question. If the answer
+        is not in the context, say you don't know.
 
-Context:
-{context}
+        Context:
+        {context}
 
-Question:
-{query}
+        Question:
+        {query}
 
-Answer in clear, concise English:
-"""
+        Answer in clear, concise English:
+        """
 
         response = self.llm.invoke(prompt)
         answer_text = getattr(response, "content", str(response))
@@ -192,11 +192,18 @@ def interactive_chat(rag_qa: SimpleRAGQA):
 # Main entry
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    TABLE_NAME = "accident_master"
     EMBEDDING_MODEL = "nomic-embed-text"
     LLM_MODEL = "llama3"
 
-    print("Loading documents from Databricks table...")
+    # Let the user choose the table
+    print("Choose a table to load (workspace.fars_database.accident_master, workspace.fars_database.person_master, workspace.fars_database.vehicle_master):")
+    TABLE_NAME = input("Table name: ").strip()
+
+    if TABLE_NAME not in {"workspace.fars_database.accident_master", "workspace.fars_database.person_master", "workspace.fars_database.vehicle_master"}:
+        print("Invalid table name. Exiting.")
+        exit(1)
+
+    print(f"Loading documents from {TABLE_NAME}...")
     documents = load_table_as_documents(TABLE_NAME)
 
     print("Building FAISS vector store...")

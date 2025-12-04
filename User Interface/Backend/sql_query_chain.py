@@ -13,6 +13,57 @@ logger = logging.getLogger(__name__)
 # ------------- Load environment variables --------------
 load_dotenv("../../config/.env")
 
+# ---------------- Column Metadata ----------------
+def load_column_metadata_from_sql(sql_file_path: str = "../../metadata.sql"):
+    """
+    Parse SQL file and extract column metadata from comments.
+    Looks for patterns like: `COLUMN_NAME` type -- Description text
+    """
+    metadata = {
+        "accident_master": {},
+        "person_master": {},
+        "vehicle_master": {}
+    }
+    
+    try:
+        if not os.path.exists(sql_file_path):
+            return metadata
+            
+        with open(sql_file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Find each table definition
+        current_table = None
+        
+        for line in content.split('\n'):
+            # Detect which table we're in
+            if 'CREATE TABLE `accident_master`' in line:
+                current_table = "accident_master"
+            elif 'CREATE TABLE `vehicle_master`' in line:
+                current_table = "vehicle_master"
+            elif 'CREATE TABLE `person_master`' in line:
+                current_table = "person_master"
+            
+            # Parse column definitions with comments
+            # Pattern: `COLUMN_NAME` type -- Comment text
+            if current_table and '`' in line and '--' in line:
+                # Extract column name between backticks
+                col_match = re.search(r'`([^`]+)`', line)
+                # Extract comment after --
+                comment_match = re.search(r'--\s*(.+)$', line)
+                
+                if col_match and comment_match:
+                    col_name = col_match.group(1).upper()
+                    comment = comment_match.group(1).strip()
+                    metadata[current_table][col_name] = comment
+        
+        return metadata
+        
+    except Exception as e:
+        return metadata
+
+COLUMN_METADATA = load_column_metadata_from_sql()
+
 # --------- Databricks Connection and Execution ---------
 def run_databricks_query(query: str) -> pd.DataFrame:
     """
@@ -70,7 +121,7 @@ TABLE_SCHEMAS = {
                    "TEST_RES", "ALC_RES", "DRUGS", "DSTATUS", "HOSPITAL", "DOA", "DEATH_MO", 
                    "DEATH_DA", "DEATH_YR", "DEATH_TM", "DEATH_HR", "DEATH_MN", "LAG_HRS", 
                    "LAG_MINS", "N_MOT_NO", "STR_VEH", "DEVTYPE", "DEVMOTOR", "LOCATION", 
-                   "WORK_INJ", "HISPANIC"],
+                   "WORK_INJ", "HISPANIC", "YEAR"],
         "string_columns": []
     },
     "workspace.fars_database.vehicle_master": {
@@ -90,7 +141,7 @@ TABLE_SCHEMAS = {
                    "PREV_SUS3", "PREV_DWI", "PREV_SPD", "PREV_OTH", "FIRST_MO", "FIRST_YR",
                    "LAST_MO", "LAST_YR", "SPEEDREL", "VTRAFWAY", "VNUM_LAN", "VSPD_LIM",
                    "VALIGN", "VPROFILE", "VPAVETYP", "VSURCOND", "VTRAFCON", "VTCONT_F",
-                   "P_CRASH1", "P_CRASH2", "P_CRASH3", "PCRASH4", "PCRASH5", "ACC_TYPE", "ACC_CONFIG"],
+                   "P_CRASH1", "P_CRASH2", "P_CRASH3", "PCRASH4", "PCRASH5", "ACC_TYPE", "ACC_CONFIG", "YEAR"],
         "string_columns": ["VIN", "TRLR1VIN", "TRLR2VIN", "TRLR3VIN", "MCARR_ID", "MCARR_I2",
                            "ADS_PRES", "ADS_LEV", "ADS_ENG"] + [f"VIN_{i}" for i in range(1,13)]
     }
@@ -110,7 +161,7 @@ def build_schema_prompt(tables):
         "6. Prefer SUM() when a question asks for totals of numeric fields.\n"
         "7. Numeric columns must never be quoted.\n"
         "8. Use COALESCE in SUM for numeric columns: `SUM(COALESCE(column, 0))`.\n"
-        "9. IMPERATIVE GROUP BY: Use GROUP BY for ANY column in the SELECT clause that is NOT aggregated (SUM, COUNT, etc.).\n"
+        "9. IMPERATIVE GROUP BY: When using ANY aggregate function (SUM, COUNT, AVG, etc.), you MUST include a GROUP BY clause with ALL non-aggregated columns from the SELECT clause.\n"
         "10. IMPERATIVE JOIN: If columns from different tables are needed, join using `ON t1.ST_CASE = t2.ST_CASE`.\n"
         "11. Output ONLY the SQL query. No comments. No markdown.\n"
         "12. NEVER reference tables that are not listed\n"
@@ -168,8 +219,62 @@ def qualify_table_names(sql_query: str) -> str:
         sql_query = re.sub(pattern, fq_name, sql_query)
     return sql_query
 
+def get_column_metadata_context(df: pd.DataFrame, sql_query: str) -> str:
+    """
+    Extract metadata for columns that appear in the query results.
+    Returns a formatted string explaining what each column means.
+    """
+    if not COLUMN_METADATA:
+        return ""
+    
+    context_lines = []
+    columns_in_result = list(df.columns)
+    
+    # Determine which table(s) were queried
+    query_lower = sql_query.lower()
+    tables_used = []
+    if 'accident_master' in query_lower:
+        tables_used.append('accident_master')
+    if 'vehicle_master' in query_lower:
+        tables_used.append('vehicle_master')
+    if 'person_master' in query_lower:
+        tables_used.append('person_master')
+    
+    # If no tables detected, search all
+    if not tables_used:
+        tables_used = ['accident_master', 'vehicle_master', 'person_master']
+    
+    for col in columns_in_result:
+        col_upper = col.upper()
+        found = False
+        
+        # Search through the tables used in the query first
+        for table_name in tables_used:
+            if table_name in COLUMN_METADATA and col_upper in COLUMN_METADATA[table_name]:
+                description = COLUMN_METADATA[table_name][col_upper]
+                context_lines.append(f"- {col}: {description}")
+                found = True
+                break
+        
+        # If not found in used tables, search all tables
+        if not found:
+            for table_name, table_metadata in COLUMN_METADATA.items():
+                if col_upper in table_metadata:
+                    description = table_metadata[col_upper]
+                    context_lines.append(f"- {col}: {description}")
+                    found = True
+                    break
+        
+        # Handle aggregated columns
+        if not found and any(keyword in col_upper for keyword in ['COUNT', 'SUM', 'AVG', 'TOTAL', 'NUM']):
+            context_lines.append(f"- {col}: Calculated/aggregated value")
+    
+    if context_lines:
+        return "\n\nColumn Meanings:\n" + "\n".join(context_lines)
+    return ""
+
 # ---------------- LLM Explanation --------------------
-def llm_explanation(question: str, df: pd.DataFrame) -> str:
+def llm_explanation(question: str, df: pd.DataFrame, sql_query: str = "") -> str:
     """
     Uses Ollama to convert the Databricks query result into a natural language answer.
     """
@@ -183,12 +288,18 @@ def llm_explanation(question: str, df: pd.DataFrame) -> str:
         # convert dataframe to JSON (safer + shorter)
         result_json = df.to_dict(orient="records")
 
+        # Get metadata context for the columns in the result
+        metadata_context = get_column_metadata_context(df, sql_query)
+
         prompt = (
             "You are an expert data interpreter.\n"
             "The user asked the following question:\n"
             f"QUESTION: {question}\n\n"
             "Here is the SQL result from Databricks:\n"
-            f"{result_json}\n\n"
+            f"{result_json}\n"
+            f"{metadata_context}\n\n"
+            "IMPORTANT: Use the column meanings above to interpret numeric codes correctly.\n"
+            "For example, if WEATHER=1 means 'Clear', say 'Clear' not '1' in your answer.\n"
             "Write a short, clean English answer explaining the result. Do NOT mention SQL, tables, or databases."
         )
 
@@ -237,7 +348,7 @@ def ask_fars_database(question: str, max_retries: int = 0):
         # ------------------------ SQL EXECUTION ------------------------
         try:
             df = run_databricks_query(sql_query)
-            nl_answer = llm_explanation(question, df)
+            nl_answer = llm_explanation(question, df, sql_query)
 
             return {
                 "query": sql_query,

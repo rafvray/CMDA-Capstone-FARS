@@ -75,7 +75,7 @@ CREATE TABLE `accident_master` (
   `WRK_ZONE` double DEFAULT NULL, -- C24: Work zone indicator (0 = None, 1 = Construction, 2 = Maintenance, 3 = Utility, 4 = Work Zone)
   
   `LGT_COND` bigint DEFAULT NULL, -- C25: Light condition (e.g., daylight, dark but lighted, dark unlighted)
-  `WEATHER` bigint DEFAULT NULL, -- C26: Atmospheric conditions (e.g., clear, rain, snow, fog)
+  `WEATHER` bigint DEFAULT NULL, -- C26: Atmospheric conditions (1 = Clear, 2 = Rain, 3 = Sleet/Hail, 4 = Snow, 5 = Fog/Smog/Smoke, 6 = Severe Crosswinds, 7 = Blowing Sand/Soil/Dirt, 8 = Other, 10 = Cloudy, 11 = Blowing Snow, 12 = Freezing Rain/Drizzle, 98 = Not reported, 99 = Unknown)
   `SCH_BUS` double DEFAULT NULL, -- C27: School bus related (1 = Yes, 0 = No)
   
   `RAIL` text, -- C28: Rail grade crossing identifier (unique code for railroad crossing if applicable)

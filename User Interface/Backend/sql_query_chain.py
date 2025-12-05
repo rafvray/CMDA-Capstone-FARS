@@ -232,13 +232,17 @@ def get_column_metadata_context(df: pd.DataFrame, sql_query: str) -> str:
             
             codes = col_meta.get("codes", {})
             if codes:
-                context_lines.append("  Code Mappings:")
-                # Limit to first 30 codes to prevent context overflow if list is huge
-                for i, (code, label) in enumerate(codes.items()):
-                    if i > 30: 
-                        context_lines.append("    ... (more codes truncated)")
-                        break
-                    context_lines.append(f"    {code} -> {label}")
+                context_lines.append("  Code Mappings (JSON Lookup Table):")
+        
+                # 1. Truncate the items list for the prompt if too long (optional)
+                items_to_map = list(codes.items())
+                if len(items_to_map) > 30:
+                    items_to_map = items_to_map[:30]
+                    context_lines.append("  ... (More than 30 codes truncated)")
+
+                map_entries = [f"'{code}': '{label}'" for code, label in items_to_map]
+                map_string = "{" + ", ".join(map_entries) + "}"
+                context_lines.append(f"  {map_string}")
         else:
             # Handle aggregates or missing metadata
             if any(k in col for k in ["SUM", "COUNT", "AVG", "TOTAL"]):
@@ -261,68 +265,103 @@ def llm_explanation(question: str, df: pd.DataFrame, sql_query: str = "") -> str
         if df.empty:
             return "The query returned no results. This might mean there's no data matching your criteria."
         
-        # convert dataframe to JSON (safer + shorter)
-        result_json = df.to_dict(orient="records")
-
         # Get metadata context for the columns in the result
         metadata_context = get_column_metadata_context(df, sql_query)
+        
+        # Create explicit row-by-row mapping WITH the decoded labels for ALL coded columns
+        row_mappings = []
+        
+        # Extract code mappings for all columns in the dataframe
+        column_code_maps = {}
+        for col in df.columns:
+            col_upper = col.upper()
+            for table_key in COLUMN_METADATA:
+                if col_upper in COLUMN_METADATA[table_key]:
+                    codes = COLUMN_METADATA[table_key][col_upper].get('codes', {})
+                    if codes:  # Only store if there are actual code mappings
+                        column_code_maps[col] = codes
+                    break
+        
+        # Build row mappings with decoded labels
+        for idx, row in df.iterrows():
+            row_dict = row.to_dict()
+            mappings = []
+            
+            # For each column that has code mappings, add the decoded label
+            for col, codes in column_code_maps.items():
+                if col in row_dict:
+                    code_val = str(row_dict[col]).strip()
+                    mapped_label = codes.get(code_val, f"Code {code_val} (no mapping)")
+                    mappings.append(f"{col} code '{code_val}' means '{mapped_label}'")
+            
+            # Format the row with its mappings
+            if mappings:
+                row_mappings.append(f"Row {idx + 1}: {row_dict} → {' | '.join(mappings)}")
+            else:
+                row_mappings.append(f"Row {idx + 1}: {row_dict}")
+        
+        rows_text = "\n".join(row_mappings)
 
         prompt = (
             "You are an expert data interpreter.\n"
-            "The user asked the following question:\n"
-            f"QUESTION: {question}\n\n"
-            "Here is the SQL result from Databricks:\n"
-            f"{result_json}\n"
+            f"The user asked: {question}\n\n"
+            
+            "QUERY RESULTS (row-by-row):\n"
+            f"{rows_text}\n\n"
+            
+            "COLUMN METADATA:\n"
             f"{metadata_context}\n\n"
-
+            
             "====================\n"
-            "CRITICAL INSTRUCTIONS\n"
-            "====================\n"
-
-            "At the beginning of EVERY answer, you MUST include the phrase:\n"
-            "\"According to the FARS data,\"\n\n"
-
-            "1. FIRST determine whether the query result contains ONE row or MULTIPLE rows.\n\n"
-
-            "2. IF THE RESULT HAS ONE ROW:\n"
-            "   - Output ONE short, direct sentence.\n"
-            "   - Start with: \"According to the FARS data, ...\"\n"
-            "   - Do NOT add explanations, disclaimers, or extra sentences.\n"
-            "   - Example:\n"
-            "       \"According to the FARS data, there were a total of 40,901 fatalities in 2023.\"\n\n"
-
-           "3. IF THE RESULT HAS MULTIPLE ROWS:\n"
-            " - You MUST start the answer with ONLY: \"According to the FARS data, accidents in Virginia (STATE=51) in 2022 had fatalities in various weather conditions.\"\n"
-            " - For EACH row/object in the input JSON (e.g., `{'WEATHER': X, 'FATALS': Y}`), output **ONE** full sentence following this template exactly:\n"
-            "  \"<count> fatality/fatalities occurred in the weather condition <mapped_label>.\"\n"
-            " - **CRITICAL MAPPING:** You MUST use the numerical code **X** from the `WEATHER` column as the *lookup key* in the `metadata_context` Mappings to find the correct English label (<mapped_label>). Pair it ONLY with the fatality count **Y** from the same row.\n"
-            " - The list of sentences must immediately follow the introductory sentence, one sentence per line. DO NOT use commas to combine sentences.\n"
-            " - If a code (e.g., 98) is present in the result but the mapping is not in the `metadata_context`, use the description provided in the metadata (e.g., 'Not reported').\n"
-            " - Each row must be interpreted completely independently. Do NOT try to connect or reorder the rows based on the mappings' order.\n\n"
-
-            "====================\n"
-            "STRICT COLUMN INTERPRETATION RULES\n"
-            "====================\n"
-            "- **ABSOLUTE PRIORITY:** Match the 'FATALS' value with the 'WEATHER' value **from the same dictionary object** in the input JSON list before applying any code mapping.\n" # The most important new rule
-            "- Treat each row as completely independent; do not compare or mix it with other rows.\n"
-            "- For each row, ensure that the value in one column (e.g., FATALS) is paired with the exact corresponding value in the other columns of the same row (e.g., WEATHER).\n"
-            "- Only use metadata_context to map coded values.\n"
-            "- If a mapping does not exist, output the numeric code as-is with '(code not reported in metadata)'.\n"
-            "- NEVER swap, reorder, or confuse column values across rows.\n"
-            "- Ignore row indices or any implicit ordering; only use the actual column values.\n"
-            "- Each output sentence should correspond 1:1 to a single row in the result.\n"
-            "- Do not infer meaning beyond what metadata_context explicitly provides.\n\n"
-
-            "4. DO NOT:\n"
-            "   - Mention SQL, tables, rows, or databases.\n"
-            "   - Mention how the answer was generated.\n"
-            "   - Use bullet points or label:value formatting.\n"
-            "   - Add filler phrases like 'here is the breakdown' or 'based on the results'.\n\n"
-
-            "5. The final output MUST:\n"
-            "   - Be clean, concise, and purely natural language.\n"
-            "   - Follow the full-sentence-per-row rule EXACTLY.\n"
-            "   - Use plural or singular ('fatality' vs 'fatalities') correctly.\n"
+            "CRITICAL MAPPING INSTRUCTIONS\n"
+            "====================\n\n"
+            
+            "EVERY answer MUST start with: \"According to the FARS data,\"\n"
+            "DO NOT add any preamble, greeting, or introduction before this phrase.\n"
+            "DO NOT say things like 'I'm ready to help' or 'Here's the answer'.\n"
+            "Start IMMEDIATELY with \"According to the FARS data,\"\n\n"
+            
+            "FOR SINGLE-ROW RESULTS:\n"
+            "- Output ONE concise sentence starting with \"According to the FARS data,\"\n"
+            "- DO NOT mention column names, SQL terms, or technical details\n"
+            "- State the answer directly and naturally\n"
+            "- Examples:\n"
+            "  * \"According to the FARS data, there were 40,901 total fatalities in 2023.\"\n"
+            "  * \"According to the FARS data, there were 2,829,432 accidents involving 17-year-old drivers.\"\n\n"
+            
+            "FOR MULTI-ROW RESULTS:\n"
+            "1. Start with ONLY: \"According to the FARS data, accidents in Virginia (STATE=51) in 2022 had fatalities in various weather conditions.\"\n\n"
+            
+            "2. For EACH row, process it EXACTLY as follows:\n"
+            "   a) Look at Row N in the QUERY RESULTS section above\n"
+            "   b) The row shows the EXACT mapping: code 'X' means 'Y'\n"
+            "   c) Use the EXACT label 'Y' shown in the arrow (→) part\n"
+            "   d) Output: \"<count value> fatality/fatalities occurred in the <category> <exact label from arrow>.\"\n\n"
+            
+            "EXAMPLE MAPPING PROCESS:\n"
+            "Row: {'WEATHER': '3', 'FATALS': 1} → WEATHER code '3' means 'Sleet or Hail'\n"
+            "Step 1: Extract FATALS = 1\n"
+            "Step 2: Extract the label after 'means' = 'Sleet or Hail'\n"
+            "Step 3: Output → \"1 fatality occurred in the weather condition Sleet or Hail.\"\n\n"
+            
+            "ANOTHER EXAMPLE:\n"
+            "Row: {'WEATHER': '8', 'FATALS': 1} → WEATHER code '8' means 'Other'\n"
+            "Output → \"1 fatality occurred in the weather condition Other.\"\n\n"
+            
+            "CRITICAL RULES:\n"
+            "- Use EXACT STRING MATCHING from the arrow (→) mappings\n"
+            "- Process rows INDEPENDENTLY - do not mix data between rows\n"
+            "- All values must come from the SAME row dictionary\n"
+            "- Use singular 'fatality' for 1, plural 'fatalities' for any other number\n"
+            "- If no mapping exists, use: \"<count> fatalities occurred in <category> <code> (not reported in metadata).\"\n"
+            "- Output one sentence per row, no bullet points or numbering\n\n"
+            
+            "DO NOT:\n"
+            "- Mention SQL, tables, databases, or technical details\n"
+            "- Use bullet points or numbered lists\n"
+            "- Add extra explanations or commentary\n"
+            "- Reorder or sort the rows\n"
+            "- Combine multiple rows into one sentence\n"
         )
 
         response = llm.invoke(prompt)

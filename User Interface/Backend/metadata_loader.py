@@ -11,7 +11,7 @@ def load_fars_codebook(csv_path: str):
     compatible with the AI Metadata Processor.
 
     Target RFARS Columns:
-      - filee:       Table type (accident, vehicle, person)
+      - file:       Table type (accident, vehicle, person)
       - name_ncsa:   The column name (e.g., WEATHER)
       - value:       The code (e.g., 98)
       - value_label: The meaning (e.g., "Not Reported")
@@ -33,13 +33,13 @@ def load_fars_codebook(csv_path: str):
 
         metadata = defaultdict(dict)
 
-        # 1. Clean Data: Ensure filee exists, fill NA with 'common' or inference
-        if 'filee' not in df.columns:
-            df['filee'] = 'fars' # Fallback if filee is missing
+        # 1. Clean Data: Ensure file exists, fill NA with 'common' or inference
+        if 'file' not in df.columns:
+            df['file'] = 'fars' # Fallback if file is missing
         
         # 2. Group by File (Table) and Variable (Column)
         # We process the dataframe by grouping to build the dictionaries efficiently
-        grouped = df.groupby(['filee', 'name_ncsa'])
+        grouped = df.groupby(['file', 'name_ncsa'])
 
         for (file_type, var_name), group in grouped:
             
